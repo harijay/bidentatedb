@@ -3,10 +3,14 @@ import subprocess
 import Queue
 from Queue import Queue
 import os
-import pymol
 from threading import Thread,Lock
 import pdbsumobj
+import tempfile
+import subprocess
 
+
+# interaction_dict is a dictionary keyed by pdb_id with PdbSumObj objects
+# Each PdbSumUbj has a interactions array which has all the line Strings
 interaction_dict = {}
 
 class PymolThread(Thread):
@@ -16,6 +20,7 @@ class PymolThread(Thread):
         Thread.__init__(self)
         self.in_queue = in_queue
         self.out_queue = out_queue
+        
     def increment_interactioncount(self,number):
         self.mutex.acquire()
         self.__class__.interactioncount = self.__class__.interactioncount + int(number)
@@ -23,23 +28,38 @@ class PymolThread(Thread):
 
     def run(self):
         while True:
-            pdbsumobj  = self.in_queue.get()
-            if pdbsumobj is not None:
-                print pdbsumobj.is_valid()
-                self.increment_interactioncount(len(pdbsumobj.interactions))
-                out_queue.put(pdbsumobj)
+            apdbsumobj  = self.in_queue.get()
+            if apdbsumobj is not None:
+                print apdbsumobj.is_valid()
+                print apdbsumobj.get_atoms_in_interaction_string()
+                self.increment_interactioncount(len(apdbsumobj.interactions))
+                t = tempfile.NamedTemporaryFile(dir="/tmp",suffix=".py")
+                t.write("""#!/usr/bin/python
+cmd.load("/media/Elements/pdb/data/structures/all/pdb/pdb{pdb_id}.ent.gz", "figobj{pdb_id}")
+preset.ligand_cartoon("figobj{pdb_id}")
+cmd.select("asn","id {atomstring}")
+cmd.zoom("asn")
+cmd.move("z", -10)
+cmd.save("/tmp/{pdb_id}.png")
+cmd.delete("figobj{pdb_id}")""".format(pdb_id=apdbsumobj.pdb_id,atomstring=apdbsumobj.get_atoms_in_interaction_string()))
+                t.seek(0)
+                subprocess.call(["pymol" , "-qc" , t.name])
+                out_queue.put(apdbsumobj)
+                # This deletes the named temporary file
+                t.close()
             if pdbsumobj == None:
                 print "TOTAL INTERACTIONS PROCESSED BY THREADS", self.__class__.interactioncount
                 break
         
 if __name__ == '__main__':
-        NUM_THREADS = 3
+        NUM_THREADS = 5
         in_queue = Queue()
         out_queue = Queue()
         f = open("/home/hari/asn_query/bidentate/bidentate_HBOND_annotated.txt","r")
         old_pdb_id = ""
         current_pdb_sum_obj = None
         for line in f:
+            # Extract the pdb_id from the interaction line
             pdb_id = line.split(",")[-1].split("_")[0].lower()
             if pdb_id in interaction_dict.keys():
                 interaction_dict[pdb_id].append_interaction(line)
